@@ -1,4 +1,5 @@
 from cProfile import label
+from multiprocessing import Pipe
 from uuid import uuid4
 from venv import create
 
@@ -13,12 +14,18 @@ from pydantic import BaseModel, validator
 from sklearn import pipeline
 import sklearn
 from sklearn import metrics
+from sklearn.compose import ColumnTransformer
+from sklearn.decomposition import PCA
+from sklearn.feature_selection import VarianceThreshold
+from sklearn.impute import SimpleImputer
 from sklearn.model_selection import cross_val_score, cross_validate, train_test_split
 from sklearn.pipeline import Pipeline
 import pandas as pd
 from sklearn.base import BaseEstimator, TransformerMixin
 from sklearn.metrics import make_scorer
 import optuna
+from sklearn.preprocessing import OneHotEncoder, StandardScaler
+from xgboost import XGBClassifier
 
 
 class StudyConfig(BaseModel):
@@ -171,21 +178,75 @@ def create_objective_function(x_train, y_train, score_func, study_config: StudyC
     return objective
 
 
-pipeline_config = {
-    "model": {
-        "name": "xgboost",
-        "params": {
-            "n_estimators": 5,
-            "learning_rate": 1e-1,
-        },
-    },
-    "preprocess": {
-        "imputer": {"name": "mean", "params": {}},
-        "encoders": [{}, {}],
-        "compresser": {"name": "PCA", "params": {}},
-    },
-    "postprocess": {"name": "identity"},
-}
+class PipelineFactory:
+    def __init__(self, numeric_cols, categorial_cols):
+        self.numeric_cols = numeric_cols
+        self.categorial_cols = categorial_cols
+
+    def from_args(
+        self,
+        numeric_imputer_cls,
+        numeric_imputer_params,
+        categorial_imputer_cls,
+        categorial_imputer_params,
+        col_dropper_cls,
+        col_dropper_params,
+        categorial_encoder_cls,
+        categorial_encoder_params,
+        scaler_cls,
+        scaler_params,
+        compressor_cls,
+        compressor_params,
+        model_cls,
+        model_params,
+        postprocessor_cls,
+        postprocessor_params,
+    ) -> Pipeline:
+        preprocess = Pipeline(
+            steps=[
+                (
+                    "imputer",
+                    ColumnTransformer(
+                        [
+                            (
+                                "numeric_imputer",
+                                numeric_imputer_cls(**numeric_imputer_params),
+                                self.numeric_cols,
+                            ),
+                            (
+                                "categorial_imputer",
+                                categorial_imputer_cls(**categorial_imputer_params),
+                                self.categorial_cols,
+                            ),
+                        ]
+                    ),
+                ),
+                (
+                    "categorial_encoder",
+                    ColumnTransformer(
+                        [
+                            "encoder_0",
+                            categorial_encoder_cls(**categorial_encoder_params),
+                            self.categorial_cols,
+                        ]
+                    ),
+                )(
+                    "col_dropper",
+                    ColumnTransformer(
+                        [("col_dropper_0", col_dropper_cls(**col_dropper_params))]
+                    ),
+                ),
+                ("scaler", scaler_cls(**scaler_params)),
+                ("compressor", compressor_cls(**compressor_params)),
+            ]
+        )
+
+        model = Pipeline(steps=[("model", model_cls(**model_params))])
+
+        postprocess = Pipeline(
+            steps=[("postprocess", postprocessor_cls(**postprocessor_params))]
+        )
+        return Pipeline(steps=[preprocess, model, postprocess])
 
 if __name__ == "__main__":
     main()
